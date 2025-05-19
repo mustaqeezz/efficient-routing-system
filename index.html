@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>OSPF Visualizer</title>
+  <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+ <link rel="stylesheet" href="ospf-style.css" />
+
+</head>
+<body>
+
+  <h2>OSPF Graph Visualizer</h2>
+
+  <div class="controls">
+    <h3>Add Edge</h3>
+    <input type="number" id="src" placeholder="Source Node" />
+    <input type="number" id="dst" placeholder="Destination Node" />
+    <input type="number" id="cost" placeholder="Cost" />
+    <input type="number" id="cost" placeholder="Latency" />
+    <input type="number" id="cost" placeholder="Power" />
+    <button onclick="addEdge()">Add Edge</button>
+
+    <h3>Compute OSPF</h3>
+    <input type="number" id="ospfSrc" placeholder="From Router" />
+    <input type="number" id="ospfDst" placeholder="To Router" />
+    <button onclick="runOspf()">Run OSPF</button>
+  </div>
+
+  <div id="network"></div>
+  <div id="result"></div>
+
+  
+</body>
+</html>
