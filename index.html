@@ -1,34 +1,108 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>OSPF Visualizer</title>
-  <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
- <link rel="stylesheet" href="ospf-style.css" />
-
+  <meta charset="UTF-8">
+  <title>Power Efficient Routing Visualization</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 </head>
 <body>
-
-  <h2>OSPF Graph Visualizer</h2>
+  <h2 class="site-title">Network Analyzer</h2>
 
   <div class="controls">
-    <h3>Add Edge</h3>
-    <input type="number" id="src" placeholder="Source Node" />
-    <input type="number" id="dst" placeholder="Destination Node" />
-    <input type="number" id="cost" placeholder="Cost" />
-    <input type="number" id="cost" placeholder="Latency" />
-    <input type="number" id="cost" placeholder="Power" />
-    <button onclick="addEdge()">Add Edge</button>
-
-    <h3>Compute OSPF</h3>
-    <input type="number" id="ospfSrc" placeholder="From Router" />
-    <input type="number" id="ospfDst" placeholder="To Router" />
-    <button onclick="runOspf()">Run OSPF</button>
+    <h3>Upload Topology JSON and Enter Source/Destination</h3>
+    <form id="inputForm">
+      <input type="file" id="fileInput" accept=".json" /><br><br>
+      <label for="source">Source:</label>
+      <input type="number" id="source" required />
+      <label for="destination">Destination:</label>
+      <input type="number" id="destination" required />
+      <button type="submit">Compute Paths</button>
+    </form>
   </div>
 
-  <div id="network"></div>
   <div id="result"></div>
 
-  
+  <div class="network-wrapper">
+    <div>
+      <h3>Full Network Topology</h3>
+      <div id="network" class="network-canvas"></div>
+    </div>
+    <div>
+      <h3>Standard OSPF Path</h3>
+      <div id="stdNetwork" class="network-canvas"></div>
+    </div>
+    <div>
+      <h3>Green OSPF Path</h3>
+      <div id="greenNetwork" class="network-canvas"></div>
+    </div>
+  </div>
+
+<script>
+document.getElementById("inputForm").addEventListener("submit", async function (e) {
+  e.preventDefault();
+
+  const resultEl = document.getElementById("result");
+  const fileInput = document.getElementById("fileInput");
+  const source = document.getElementById("source").value;
+  const destination = document.getElementById("destination").value;
+
+  if (!fileInput.files[0]) {
+    resultEl.innerText = "Please upload a JSON file.";
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", fileInput.files[0]);
+  await fetch("/api/topology-file", { method: "POST", body: formData });
+
+  const computeRes = await fetch("/api/compute-paths", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source, destination })
+  });
+
+  const resultJson = await computeRes.json();
+  if (!computeRes.ok) {
+    resultEl.innerText = "Error: " + (resultJson.error || "Unknown error");
+    return;
+  }
+
+  resultEl.innerHTML = `
+    <strong>Standard OSPF Path:</strong> ${resultJson.standard_ospf_path.join(" → ")}<br>
+    <strong>Green OSPF Path:</strong> ${resultJson.green_ospf_path.join(" → ")}
+  `;
+
+  const graphRes = await fetch("/api/graph-data");
+  const graph = await graphRes.json();
+  const fullNodes = new vis.DataSet(graph.nodes);
+  const allEdges = graph.edges;
+
+  new vis.Network(document.getElementById("network"), {
+    nodes: fullNodes,
+    edges: new vis.DataSet(allEdges)
+  }, {});
+
+  function renderFullWithPath(containerId, path, edges, color) {
+    const highlighted = edges.map(edge => {
+      for (let i = 0; i < path.length - 1; i++) {
+        const [a, b] = [path[i], path[i + 1]];
+        if ((edge.from === a && edge.to === b) || (edge.from === b && edge.to === a)) {
+          return { ...edge, color: { color: color }, width: 3 };
+        }
+      }
+      return edge;
+    });
+    new vis.Network(document.getElementById(containerId), {
+      nodes: fullNodes,
+      edges: new vis.DataSet(highlighted)
+    }, {});
+  }
+
+  renderFullWithPath("stdNetwork", graph.standard_ospf_path, allEdges, "red");
+  renderFullWithPath("greenNetwork", graph.green_ospf_path, allEdges, "green");
+});
+</script>
 </body>
 </html>
