@@ -1,110 +1,105 @@
 from router import Router
 from link import Link
 from lsa import RouterLSA
-from lsdb import LSDB                  #for dijkstra
-from collections import defaultdict    #for dijkstra
-import heapq                           #for dijkstra
 
 INIT_SEQ_NUM = 0x80000001
 
-def parse_router_ids(topology):
-    router_ids = set()
-    for src, dst, *_ in topology:
-        router_ids.add(src)
-        router_ids.add(dst)
-    return sorted(list(router_ids))
 
-def synchronize_routers(network_topology):
-    router_ids = parse_router_ids(network_topology)
+def parse_router_ids(topology):
+    """
+    Extract all unique router IDs from the topology list.
+    """
+    ids = set()
+    for src, dst, *rest in topology:
+        try:
+            ids.add(int(src))
+            ids.add(int(dst))
+        except ValueError:
+            raise ValueError(f"Invalid router ID in topology entry: {src}, {dst}")
+    return sorted(ids)
+
+
+def compute_standard_and_green_ospf(
+    topology, source, destination, weights
+):
+    """
+    Compute both standard (cost-only) and green (weighted) OSPF paths.
+
+    Args:
+        topology: List of [src, dst, cost, latency, power, utilization]
+        source: Integer ID of source router
+        destination: Integer ID of destination router
+        weights: Dict of metric weights for green path
+
+    Returns:
+        Tuple of (routers_list, std_path, std_metrics, green_path, green_metrics)
+    """
+    # Initialize routers and inject LSAs
+    router_ids = parse_router_ids(topology)
     routers = {rid: Router(rid) for rid in router_ids}
 
-    # Step 1: Inject direct LSAs with multiple metrics into each router
-    for src, dst, cost, latency, power, utilization in network_topology:
-        lsa = RouterLSA(Link(src, dst), INIT_SEQ_NUM, cost, latency, power, utilization)
-        routers[src].receive_lsa(lsa)
-        routers[dst].receive_lsa(lsa)
+    for src, dst, cost, latency, power, utilization in topology:
+        lsa = RouterLSA(
+            Link(src, dst), INIT_SEQ_NUM,
+            cost, latency, power, utilization
+        )
+        routers[int(src)].receive_lsa(lsa)
+        routers[int(dst)].receive_lsa(lsa)
 
-    # Step 2: Flood LSAs until synchronized or iteration limit is reached
+    # Synchronize LSDB across all routers
     MAX_ITER = 100
     for _ in range(MAX_ITER):
-        converged = True
+        change = False
         for rid in router_ids:
             router = routers[rid]
             advertised = router.advertise_database()
-            for neighbor_id in router.neighbors():
-                if neighbor_id not in routers:
+            for nbr in router.neighbors():
+                neighbor = routers.get(nbr)
+                if not neighbor:
                     continue
-                neighbor = routers[neighbor_id]
                 before = set(neighbor.advertise_database())
                 neighbor.update_database(advertised)
-                after = set(neighbor.advertise_database())
-                if before != after:
-                    converged = False
-        if converged:
-            return [routers[r] for r in router_ids]
-    raise RuntimeError("OSPF LSDB synchronization failed after 100 iterations.")
+                if set(neighbor.advertise_database()) != before:
+                    change = True
+        if not change:
+            break
+    else:
+        raise RuntimeError(
+            f"OSPF LSDB synchronization failed after {MAX_ITER} iterations."
+        )
 
-def print_forwarding_tables(routers):
-    print("\n==== Forwarding Tables ====")
-    for router in routers:
-        calculate_dijkstras(router)
-        print(f"\nRouter {router.router_id} Forwarding Table:")
-        table = router.generate_forwarding_table()
-        for dest, path, cost_vector in table:
-            cost_str = ", ".join(f"{name}: {val}" for name, val in zip(["cost", "latency", "power", "utilization"], cost_vector))
-            print(f"  Dest: {dest}, Path: {' -> '.join(map(str, path))}, Metrics: {cost_str}")
+    # Helper to compute a path given a weight map
+    def _compute_path(weight_map):
+        for router in routers.values():
+            router.metric_weights = weight_map
+            router.calculate_dijkstra()
+        src_router = routers.get(int(source))
+        if not src_router:
+            raise ValueError(f"Source router {source} not found in topology.")
+        path = src_router.paths.get(int(destination))
+        metrics = src_router.distances.get(int(destination))
+        
+        if not path or not metrics:
+            raise ValueError(f"No valid path from router {source} to router {destination}")
+        
+        return path, metrics
 
-def print_preferred_path(routers, src, dst):
-    router_map = {r.router_id: r for r in routers}
-    if src not in router_map or dst not in router_map:
-        print("Source or destination router not found")
-        return
-    router = router_map[src]
-    calculate_dijkstras(router)
-    path = router.paths.get(dst)
-    if not path:
-        print(f"No path from {src} to {dst}")
-        return
-    cost_vector = router.distances.get(dst)
-    cost_str = ", ".join(f"{name}: {val}" for name, val in zip(["cost", "latency", "power", "utilization"], cost_vector))
-    print(f"Preferred path from {src} to {dst}: {' -> '.join(map(str, path))}")
-    print(f"Metrics: {cost_str}")
+    # Standard OSPF: cost-only metrics
+    std_weights = {'cost': 1.0, 'latency': 0.0, 'power': 0.0, 'utilization': 0.0}
+    std_path, std_metrics = _compute_path(std_weights)
 
-def calculate_dijkstras(router):
-        graph = defaultdict(list)
-        for src in router.networkLSA.get_all_destinations():
-            for lsa in filter(lambda l: l.link.get_src_id() == src or l.link.get_dest_id() == src, router.networkLSA.advertise_database()):
-                # Determine the "other" endpoint of the link
-                other = lsa.link.get_dest_id() if lsa.link.get_src_id() == src else lsa.link.get_src_id()
-                graph[src].append((other, (lsa.cost, lsa.latency, lsa.power, lsa.utilization)))
+    # Green OSPF: merge user weights with defaults
+    default_weights = {'cost': 0.2, 'latency': 1.0, 'power': 0.2, 'utilization': 0.7}
+    green_weights = {
+        k: float(weights.get(k, default_weights[k]))
+        for k in default_weights
+    }
+    green_path, green_metrics = _compute_path(green_weights)
 
-        def weighted_cost(metrics):
-            return sum(router.metric_weights[k] * v for k, v in zip(router.metric_weights.keys(), metrics))
-
-        router.distances = {}
-        router.previous = {}
-        router.paths = {}
-
-        pq = [(0, router.router_id, [router.router_id], (0,0,0,0))]
-        visited = set()
-
-        while pq:
-            wcost, node, path, cum_metrics = heapq.heappop(pq)
-            if node in visited:
-                continue
-            visited.add(node)
-            router.distances[node] = cum_metrics
-            router.paths[node] = path
-
-            for neighbor, metrics in graph[node]:
-                if neighbor in visited:
-                    continue
-                new_cum_metrics = tuple(cum + m for cum, m in zip(cum_metrics, metrics))
-                new_wcost = weighted_cost(new_cum_metrics)
-
-                # Update if new path is better
-                old_metrics = router.distances.get(neighbor)
-                old_wcost = weighted_cost(old_metrics) if old_metrics else float('inf')
-                if new_wcost < old_wcost:
-                    router.previous[neighbor] = node
-                    heapq.heappush(pq, (new_wcost, neighbor, path + [neighbor], new_cum_metrics))
+    return (
+        list(routers.values()),
+        std_path,
+        std_metrics,
+        green_path,
+        green_metrics
+    )
