@@ -173,7 +173,7 @@ h2.site-title {
   border-radius: 8px;
 }
 
-/* Responsive adjustments */
+/* Responsive adjustments added */
 @media (max-width: 600px) {
   .main-container {
     padding: 0 0.5em 1.2em 0.5em;
